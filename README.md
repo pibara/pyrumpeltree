@@ -13,8 +13,10 @@ The pyrumpeltree module is meant as the core hashing and encoding logic for serv
 and/or file-systems implementing sparse-cap designated singly attenuated Rumpelstiltskin DAG's.
 For more information on sparse-cap designated singly attenuated Rumpelstiltskin DAG's, and the way 
 that pyrumpeltree implements these:
-  https://minorfs.wordpress.com/2014/02/20/rumpelstiltskin-and-his-children/
-  https://minorfs.wordpress.com/2014/03/21/rumpelstiltskin-and-his-children-part-2/
+
+ * https://minorfs.wordpress.com/2014/02/20/rumpelstiltskin-and-his-children/
+ * https://minorfs.wordpress.com/2014/03/21/rumpelstiltskin-and-his-children-part-2/
+
 While the API talks of servers and clients, please take note that there isn't actually any server or
 client implemented in this module. The server refers to the logic that is expected to reside inside
 of 'your' server of file-system logic. And chances are you won't ever need to use the 'client' part.
@@ -61,14 +63,27 @@ related to the very same language features that allow promptly wiping sensitive 
 should carefully consider your threath model before choosing for pyrumpeltree or opting for Rumpletree++
 instead. 
 If you find any bugs, see any cryptographical design problems in the algoritm or just want to discuss 
-the usage of this python library, please contact the author : pibara[at]gmail[dot]com.
+the usage of this python library, or have any ideas about improvements, please contact the author : 
+
+pibara[at]gmail[dot]com.
+
+Python 3 isn't really my normal language of choice so any tips on cleaning up my code or making it more pytonic
+are very much welcomed. 
 
 # The example tool
 
 The tool rumpelbox is a simple busybox style all in one script that is symlinked multiple times to provide 
-a set of tools to play around with the pyrumpeltree library functionality. The tools will store and consult 
+a set of tools to play around with the pyrumpeltree library functionality. The tool will store and consult 
 encrypted files in the ~/.rumpeltree/ directory. When playing around with the tools you should try to keep 
-track of fow new encrypted files get created there.
+track of fow new encrypted files get created there. Basically the tool uses the Rumpeltree logic and generated 
+paths/crypto keys to store individually AES encrypted json serialized data or directory nodes in a 3 layer deep balanced
+directory tree. Please remember this tool is meant to be educational only. Error handling is non existent and
+there definetely are unacceptable race conditions making the tool unsuitable for any other purposes, but playing with
+this tool seems to currently be the only way for quite some people to get a grasp of how the Rumpelstiltskin singly 
+attenuated DAG tree algoritm does its thing, so please excuse the poor coding of rompelbox and go play with it for
+a short while before looking at using the library in your own projects. That's what the rool is for and I can assure
+you that if you have played with the tool for ten minutes and have observer the ~/.rumpeltree/ directory, you WILL have
+a decent grasp of the potential of using either this Python port or the original C++ implementation  RumpelTree++.
 
  * rumpeldump  <cap>  : dump the decrypted node json data/
  * rumpells  <cap> : list the entities in a directory node and their respective sparse caps.
