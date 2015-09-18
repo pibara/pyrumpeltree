@@ -1,0 +1,326 @@
+#!/usr/bin/python3
+#  !!!WARNING!!!! 
+#
+# This script is just a demonstrator of how pyrumpeltree works. The code in this file is nowhere close
+# to being production ready. Most importantly, proper file locking and exception safety need to be
+# seriously looked at if this code is to be used in production and error handling as a whole is basically missing.
+# Next to that, the whole 'file in memory' operations stuff is seriously a bad idea for any operational usage.
+# So remember, this script is just a demonstrator and have fun with using the pyrumpelree library.
+#
+import pyrumpeltree
+import json
+from os.path import expanduser,exists
+from Crypto.Cipher import AES
+from Crypto.Util import Counter
+import os
+import sys
+
+class Repository:
+  def _createdir(self,dirpath):
+    if not exists(dirpath):
+      self._createdir("/".join(dirpath.split("/")[:-1]))
+      os.mkdir(dirpath)
+  def _writedata(self,storage,data):
+    relpath=storage() + ".dat"
+    fek=storage.crypto_key()
+    BS = 16
+    padded=data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
+    ctr = Counter.new(128)
+    cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+    ed=cipher.encrypt(padded)
+    filepath=self.root + "/" + relpath
+    self._createdir("/".join(filepath.split("/")[:-1]))
+    f = open(filepath, 'wb')
+    f.write(ed)
+    f.close()
+  def _readdata(self,storage):
+    relpath=storage() + ".dat"
+    fek=storage.crypto_key()
+    BS = 16
+    ctr = Counter.new(128)
+    cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+    filepath=self.root + "/" + relpath
+    f = open(filepath,'rb')
+    ed=f.read()
+    f.close()
+    padded = cipher.decrypt(ed)
+    return padded[:-ord(padded[len(padded)-1:])]
+  def _unlink(self,storage):
+    relpath=storage() + ".dat"
+    filepath=self.root + "/" + relpath
+    os.unlink(filepath)
+  def _exists(self,storage):
+    relpath=storage() + ".dat"
+    filepath=self.root + "/" + relpath
+    return exists(filepath)
+  def _writeobject(self,storage,obj):
+    data=json.dumps(obj)
+    self._writedata(storage,data)
+  def _readobject(self,storage):
+    data=self._readdata(storage).decode('utf-8')
+    return json.loads(data)
+  def __init__(self,root,secret,cloudsecret=""):
+    self.root=root
+    self.rumpeltree = pyrumpeltree.create_server(secret,cloudsecret)
+  def newroot(self,password=None):
+    if password == None:
+      rootcap=pyrumpeltree.randomrootcap()
+    else:
+      rootcap=pyrumpeltree.pass2rootcap(password)
+    entity=self.rumpeltree[rootcap]
+    storage=entity.storage()
+    if self._exists(storage):
+      print("Error: Node " + entity.cap() + " already excists")
+    else:
+      self._writeobject(storage,{'type':'dir','dir':[]})
+      print("New root created; cap = ",entity.cap())
+  def oldroot(self,password):
+    rootcap=pyrumpeltree.pass2rootcap(password)
+    entity=self.rumpeltree[rootcap]
+    storage=entity.storage()
+    if self._exists(storage):
+      print(" * ",entity.cap())
+    else:
+      print("ERROR: No such entity currently exists.")
+  def dumpdata(self,cap):
+    entity=self.rumpeltree[cap]
+    storage=entity.storage()
+    if self._exists(storage):
+      data=self._readdata(storage)
+      print(data)
+    else:
+      print("ERROR: Entity does not exist")
+  def restoredata(self,cap):
+    entity=self.rumpeltree[cap]
+    storage=entity.storage()
+    if self._exists(storage):
+      data=self._readobject(storage)
+      if data["type"] != "file":
+        print("ERROR: Node is not a data node")
+      else:
+        print(data["content"])
+    else:
+      print("ERROR: Entity does not exist")
+  def ro(self,cap):
+    entity=self.rumpeltree[cap]
+    print(entity.attenuated().cap())
+  def mkdir(self,cap,subdir):
+    entity=self.rumpeltree[cap]
+    if entity.isattenuated():
+      print("Parent node is read only")
+      return
+    storage=entity.storage()
+    parent=self._readobject(storage)
+    if parent["type"] != "dir":
+      print("Parent node isn't a directory")
+      return
+    for subent in parent["dir"]:
+      if subent == subdir:
+        print("Subdir exists already")
+        return
+    parent["dir"].append(subdir)
+    self._writeobject(storage,parent)
+    child=entity[subdir]
+    cstorage=child.storage()
+    self._writeobject(cstorage,{'type':'dir','dir':[]})  
+    print(child.cap())
+  def rmdir(self,cap,subdir):
+    entity=self.rumpeltree[cap]
+    if entity.isattenuated():
+      print("Parent node is read only")
+      return
+    storage=entity.storage()
+    parent=self._readobject(storage)
+    if parent["type"] != "dir":
+      print("Parenit node isn't a directory")
+      return
+    exists=False
+    for subent in parent["dir"]:
+      if subent == subdir:
+        exists=True
+    if exists == False:
+      print("ERROR: No such entry.")
+      return
+    childentity = entity[subdir]
+    storage2=childentity.storage()
+    child=self._readobject(storage2)
+    if child["type"] != "dir":
+      print("ERROR: Child node isn't a directory")
+      return
+    if len(child["dir"]) != 0:
+      print("ERROR: Child directory not empty.")
+      return
+    newdirlist=[]
+    for subent in parent["dir"]:
+      if subent != subdir:
+        newdirlist.append(subent)
+    parent["dir"]=newdirlist
+    self._writeobject(storage,parent)
+    self._unlink(storage2)
+    print("OK")
+  def rm(self,cap,subfile):
+    entity=self.rumpeltree[cap]
+    if entity.isattenuated():
+      print("Parent node is read only")
+      return
+    storage=entity.storage()
+    parent=self._readobject(storage)
+    if parent["type"] != "dir":
+      print("Parent node isn't a directory")
+      return
+    exists=False
+    for subent in parent["dir"]:
+      if subent == subfile:
+        exists=True
+    if exists == False:
+      print("ERROR: No such entry.")
+      return
+    childentity = entity[subfile]
+    storage2=childentity.storage()
+    child=self._readobject(storage2)
+    if child["type"] != "file":
+      print("ERROR: Child node isn't a file")
+      return
+    newdirlist=[]
+    for subent in parent["dir"]:
+      if subent != subfile:
+        newdirlist.append(subent)
+    parent["dir"]=newdirlist
+    self._writeobject(storage,parent)
+    self._unlink(storage2)
+    print("OK")
+
+  def ls(self,cap):
+    entity=self.rumpeltree[cap]
+    storage=entity.storage()
+    parent=self._readobject(storage)
+    if parent["type"] != "dir":
+      print("Parent node isn't a directory")
+      return
+    print("Directory node listing:")
+    for subentname in parent["dir"]:
+      subent=entity[subentname]
+      print("* ",subentname,"=>",subent.cap())
+  def save(self,cap,dataname):
+    entity=self.rumpeltree[cap]
+    if entity.isattenuated():
+      print("Parent node is read only")
+      return
+    storage=entity.storage()
+    parent=self._readobject(storage)
+    if parent["type"] != "dir":
+      print("Parent node isn't a directory")
+      return
+    for subent in parent["dir"]:
+      if subent == dataname:
+        print("File exists already")
+        return
+    parent["dir"].append(dataname)
+    self._writeobject(storage,parent)
+    child=entity[dataname]
+    cstorage=child.storage()
+    alldata = sys.stdin.read()
+    self._writeobject(cstorage,{'type':'file','content': alldata})
+    print(child.cap()) 
+
+home=expanduser("~")
+rumpeldir=home + "/.rumpeltree"
+if not exists(rumpeldir):
+  print("Creating dir : '"+rumpeldir+"'")
+  os.mkdir(rumpeldir)
+repo=Repository(rumpeldir,b"sst,this is a secret")
+me=os.path.basename(__file__)
+if me == "rumpelbox":
+  print("ERROR: Call rumpelbox through one of the symlinks")
+  exit()
+if me == "rumpelnew":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Create a new root directory from a password.")
+    print("Usage:")
+    print("   rumpelnew <password>")
+    exit()
+  repo.newroot(sys.argv[1])
+  exit()
+if me == "rumpelold":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Reconstruct an existig rootdir using the same password used for its creation.")
+    print("Usage:")
+    print("   rumpelold <password>")
+    exit()
+  repo.oldroot(sys.argv[1])
+  exit()
+if me == "rumpeldump":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Dump the content of an existing Rumpelstiltskin Tree Node to standard out.")
+    print("Usage:")
+    print ("  rumpeldump <sparsecap>")
+    exit()
+  repo.dumpdata(sys.argv[1])
+  exit()
+if me == "rumpelrestore":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Dump the content of an existing Rumpelstiltskin Tree Node to standard out.")
+    print("Usage:")
+    print ("  rumpelrestore <sparsecap>")
+    exit()
+  repo.restoredata(sys.argv[1])
+  exit()
+if me == "rumpelro":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Get an attenuated (read only) version of any given unattenuated node.")
+    print("Usage:")
+    print("   rumpelro <rw sparsecap>")
+    exit()
+  repo.ro(sys.argv[1])
+  exit()
+if me == "rumpelmkdir":
+  if len(sys.argv) < 3:
+    print("Purpose:")
+    print("   Create a new directory node as sub node of an existing unatenuated node.")
+    print("Usage:")
+    print("   rumpelmkdir <sparsecap> <dirname>")
+    exit()
+  repo.mkdir(sys.argv[1],sys.argv[2])
+  exit()
+if me == "rumpells":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   List all sub entities and their sparse caps for a given directory node.")
+    print("Usage:")
+    print("  rumpells <directory cap>")
+    exit()
+  repo.ls(sys.argv[1])
+  exit()
+if me == "rumpelrmdir":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Remove an empty subdirectory node.")
+    print("Usage")
+    print("  rumpelrmdir <parent dir cap> <subdir name>")
+    exit()
+  repo.rmdir(sys.argv[1],sys.argv[2])
+  exit()
+if me == "rumpelrm":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("  Remove a data node.")
+    print ("Usage:")
+    print("  rumpelrm <parent dir cap> <data node name>")
+    exit()
+  repo.rm(sys.argv[1],sys.argv[2])
+  exit()
+if me == "rumpelsave":
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Save data from standard input to named data node.")
+    print("Usage:")
+    print("   <somecommand> | rumpelsave <directory cap> <new data node name>")
+    exit()
+  repo.save(sys.argv[1],sys.argv[2])
+  exit()
+
