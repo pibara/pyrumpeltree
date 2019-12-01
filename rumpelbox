@@ -14,6 +14,8 @@ from Crypto.Cipher import AES
 from Crypto.Util import Counter
 import os
 import sys
+import stat
+import errno
 
 class Repository:
   def _createdir(self,dirpath):
@@ -222,6 +224,110 @@ class Repository:
     alldata = sys.stdin.read()
     self._writeobject(cstorage,{'type':'file','content': alldata})
     print(child.cap()) 
+  def runfs(self, mp, fuse):
+      class RumpelTreeFs(fuse.Fuse):
+          def __init__(self,dash_s_do, version, usage, rt):
+              self.rt = rt
+              super(RumpelTreeFs, self).__init__(version=version, usage=usage, dash_s_do=dash_s_do)
+          def main(self, args=None):
+              fuse.Fuse.main(self, args)
+          def _path_object(self, path):
+              parts = path.split("/")[1:]
+              try:
+                  entity=self.rt[parts[0]]
+                  storage=entity.storage()
+              except:
+                  return None,None,None
+              epath = "~/.rumpeltree/" + storage() + ".dat"
+              epath = os.path.expanduser(epath)
+              fek=storage.crypto_key()
+              BS = 16
+              ctr = Counter.new(128)
+              cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+              f = open(epath,'rb')
+              ed=f.read()
+              f.close()
+              padded = cipher.decrypt(ed)
+              plain = padded[:-ord(padded[len(padded)-1:])]
+              if len(parts) > 1:
+                  subent=entity[parts[1]].cap()
+                  return json.loads(plain.decode('utf-8')), parts[1], subent
+              else:
+                  return json.loads(plain.decode('utf-8')), None, None
+          def getattr(self, path):
+              print("getattr", path)
+              if path == "/":
+                  st = os.lstat("/")
+                  return st
+              else:
+                pobj,sub,cap = self._path_object(path)
+                if pobj == None:
+                    return -errno.ENOENT
+                nodetype=pobj["type"]
+                if nodetype == "dir":
+                    if sub == None:
+                        st = os.lstat("/")
+                    else:
+                        st = os.lstat("/etc/os-release")
+                else:
+                    st = os.lstat("/etc/passwd")
+                return st
+          def setattr(self, path, hmm):
+              print("setattr", path)
+              return 0
+          def opendir(self, path):
+              print("opendir", path)
+              return 0
+          def readdir(self, path, offset):
+              print("READDIR:", path, offset)
+              tags = ['.', '..']
+              if path != "/":
+                  pobj,sub,cap = self._path_object(path)
+                  if pobj == None:
+                      return -errno.ENOENT
+                  for entry in pobj["dir"]:
+                      tags.append(entry)
+              return map(lambda k: fuse.Direntry(name = k, type = stat.S_IFDIR), tags)
+          def releasedir(self, path):
+              print("releasedir", path)
+              return 0
+          def readlink(self, path):
+              print("readlink", path)
+              pobj,sub,cap = self._path_object(path)
+              return "../" + cap
+          def listxattr(self, path, huh):
+              print("listxattr", path)
+              return 0
+          def getxattr(self, path, name, size):
+              print("getxattr", path)
+              return 0
+          def setxattr(self, path, name, val, more):
+              print("setxattr", path)
+              return 0
+          def open(self, path, flags):
+              print("open", path)
+              return 0
+          def release(self, path, fh):
+              print("release", path)
+              return 0
+          def read(self, path, size, offset):
+              print("read", path)
+              return 0
+          def write(self, path, data, offset):
+              print("write", path)
+              return 0
+          def truncate(self, path, len, fh=None):
+              print("truncate", path)
+              return 0
+          def flush(self, path):
+              print("flush", path)
+              return 0
+      fs = RumpelTreeFs(version='%prog ' + '0.1.0', usage='RumpelTree FileSystem ' + fuse.Fuse.fusage, dash_s_do='setsingle', rt=self.rumpeltree)
+      fs.parse(errex=1)
+      fs.flags = 0
+      fs.multithreaded = 0
+      # Actually run the file system.
+      fs.main()
 
 home=expanduser("~")
 rumpeldir=home + "/.rumpeltree"
@@ -232,8 +338,27 @@ repo=Repository(rumpeldir,b"sst,this is a secret")
 me=os.path.basename(__file__)
 if me == "rumpelbox":
   print("ERROR: Call rumpelbox through one of the symlinks")
-  exit()
-if me == "rumpelnew":
+elif me == "rumpeltreefs":
+  try:
+      import fuse
+      fuse.fuse_python_api = (0, 2)
+  except:
+      print("ERROR: rumpeltreefs requires th python3 fuse module to be installed.")
+      exit()
+  if len(sys.argv) < 2:
+    print("Purpose:")
+    print("   Mount repo with at least one existing root directory as a file-system.")
+    print("Usage:")
+    print("   rumpeltreefs <mountpoint>")
+    exit()
+  if not os.path.isdir(sys.argv[1]):
+      print("ERROR: invalid mountpoint given!")
+      exit(1)
+  if len(os.listdir(sys.argv[1]) ) != 0:
+      print("ERROR: Mountpoint must be an empty directory!")
+      exit(1)
+  repo.runfs(sys.argv[1], fuse)
+elif me == "rumpelnew":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Create a new root directory from a password.")
@@ -241,8 +366,7 @@ if me == "rumpelnew":
     print("   rumpelnew <password>")
     exit()
   repo.newroot(sys.argv[1])
-  exit()
-if me == "rumpelold":
+elif me == "rumpelold":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Reconstruct an existig rootdir using the same password used for its creation.")
@@ -250,8 +374,7 @@ if me == "rumpelold":
     print("   rumpelold <password>")
     exit()
   repo.oldroot(sys.argv[1])
-  exit()
-if me == "rumpeldump":
+elif me == "rumpeldump":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Dump the content of an existing Rumpelstiltskin Tree Node to standard out.")
@@ -259,8 +382,7 @@ if me == "rumpeldump":
     print ("  rumpeldump <sparsecap>")
     exit()
   repo.dumpdata(sys.argv[1])
-  exit()
-if me == "rumpelrestore":
+elif me == "rumpelrestore":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Dump the content of an existing Rumpelstiltskin Tree Node to standard out.")
@@ -268,8 +390,7 @@ if me == "rumpelrestore":
     print ("  rumpelrestore <sparsecap>")
     exit()
   repo.restoredata(sys.argv[1])
-  exit()
-if me == "rumpelro":
+elif me == "rumpelro":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Get an attenuated (read only) version of any given unattenuated node.")
@@ -277,8 +398,7 @@ if me == "rumpelro":
     print("   rumpelro <rw sparsecap>")
     exit()
   repo.ro(sys.argv[1])
-  exit()
-if me == "rumpelmkdir":
+elif me == "rumpelmkdir":
   if len(sys.argv) < 3:
     print("Purpose:")
     print("   Create a new directory node as sub node of an existing unatenuated node.")
@@ -286,8 +406,7 @@ if me == "rumpelmkdir":
     print("   rumpelmkdir <sparsecap> <dirname>")
     exit()
   repo.mkdir(sys.argv[1],sys.argv[2])
-  exit()
-if me == "rumpells":
+elif me == "rumpells":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   List all sub entities and their sparse caps for a given directory node.")
@@ -295,8 +414,7 @@ if me == "rumpells":
     print("  rumpells <directory cap>")
     exit()
   repo.ls(sys.argv[1])
-  exit()
-if me == "rumpelrmdir":
+elif me == "rumpelrmdir":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Remove an empty subdirectory node.")
@@ -305,7 +423,7 @@ if me == "rumpelrmdir":
     exit()
   repo.rmdir(sys.argv[1],sys.argv[2])
   exit()
-if me == "rumpelrm":
+elif me == "rumpelrm":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("  Remove a data node.")
@@ -313,8 +431,7 @@ if me == "rumpelrm":
     print("  rumpelrm <parent dir cap> <data node name>")
     exit()
   repo.rm(sys.argv[1],sys.argv[2])
-  exit()
-if me == "rumpelsave":
+elif me == "rumpelsave":
   if len(sys.argv) < 2:
     print("Purpose:")
     print("   Save data from standard input to named data node.")
@@ -322,5 +439,6 @@ if me == "rumpelsave":
     print("   <somecommand> | rumpelsave <directory cap> <new data node name>")
     exit()
   repo.save(sys.argv[1],sys.argv[2])
-  exit()
+else:
+    print("ERROR: Unknown symlink name:", me)
 
