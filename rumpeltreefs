@@ -1,1 +1,376 @@
-rumpelbox
+#!/usr/bin/python3
+import pyrumpeltree
+import json
+from os.path import expanduser,exists
+from Crypto.Cipher import AES
+from Crypto.Util import Counter
+import os
+import sys
+import stat
+import errno
+import fuse
+import time
+fuse.fuse_python_api = (0, 2)
+
+class DirStat(fuse.Stat):
+    def __init__(self):
+        self.st_mode = stat.S_IFDIR | 0o700
+        self.st_ino = 0
+        self.st_dev = 0
+        self.st_nlink = 2
+        self.st_uid = 0
+        self.st_gid = 0
+        self.st_size = 4096
+        self.st_atime = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+
+class TopDirStat(fuse.Stat):
+    def __init__(self):
+        self.st_mode = stat.S_IFDIR | 0o500
+        self.st_ino = 0
+        self.st_dev = 0
+        self.st_nlink = 6
+        self.st_uid = 0
+        self.st_gid = 0
+        self.st_size = 4096
+        self.st_atime = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+
+class CapDirStat(fuse.Stat):
+    def __init__(self):
+        self.st_mode = stat.S_IFDIR | 0o100
+        self.st_ino = 0
+        self.st_dev = 0
+        self.st_nlink = 99999
+        self.st_uid = 0
+        self.st_gid = 0
+        self.st_size = 4096
+        self.st_atime = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+
+
+class LinkStat(fuse.Stat):
+    def __init__(self):
+        self.st_mode = stat.S_IFLNK | 0o700
+        self.st_ino = 0
+        self.st_dev = 0
+        self.st_nlink = 1
+        self.st_uid = 0
+        self.st_gid = 0
+        self.st_size = 4096
+        self.st_atime = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+
+class FileStat(fuse.Stat):
+    def __init__(self, filesize):
+        self.st_mode = stat.S_IFREG | 0o600
+        self.st_ino = 0
+        self.st_dev = 0
+        self.st_nlink = 1
+        self.st_uid = 0
+        self.st_gid = 0
+        self.st_size = filesize
+        self.st_atime = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+
+class DataStat(fuse.Stat):
+    def __init__(self, ddict):
+        self.st_mode = ddict["mode"]
+        self.st_ino = ddict["ino"]
+        self.st_dev = ddict["dev"]
+        self.st_nlink = ddict["nlink"]
+        self.st_uid = ddict["uid"]
+        self.st_gid = ddict["gid"]
+        self.st_size = ddict["size"]
+        self.st_atime = ddict["atime"]
+        self.st_mtime = ddict["mtime"]
+        self.st_ctime = ddict["ctime"]
+
+class RumpelTreeFs(fuse.Fuse):
+    def __init__(self,dash_s_do, version, usage, secret, cloudsecret, rootsecret):
+        self.rt = pyrumpeltree.create_server(secret,cloudsecret)
+        self.rootcap = pyrumpeltree.pass2rootcap(rootsecret)
+        super(RumpelTreeFs, self).__init__(version=version, usage=usage, dash_s_do=dash_s_do)
+    def main(self, args=None):
+        fuse.Fuse.main(self, args)
+    def normalize_path(self, path):
+        parts = path.split("/")[1:]
+        if parts[0] == "cap":
+            if len(parts) == 1:
+                return "", False
+            else:
+                return "/".join(parts[1:]), False
+        rval = None
+        cancreate = False
+        if parts[0] in ["tmp", "uid", "bin"]:
+            dic = fuse.Fuse.GetContext(self)
+            uid = dic["uid"]
+            pid = dic["pid"]
+            cancreate = True
+            if parts[0] == "uid":
+                rval =  self.rootcap + "/" + str(uid) + "/_user" 
+                if len(parts) > 1: 
+                    rval += "/" + "/".join(parts[1:])
+                    cancreate = False
+            elif parts[0] == "tmp":
+                rval = self.rootcap + "/" + str(uid) + "/" + str(pid) 
+                if len(parts) > 1:
+                    rval += "/" + "/".join(parts[1:])
+                    cancreate = False
+            else:
+                with open("/proc/" + str(pid) + "/maps") as maps:
+                    cmd = maps.readline().split(" ")[-1][:-1]
+                rval =  self.rootcap + "/" + str(uid) + "/_bin" + cmd 
+                if len(parts) > 1:
+                    rval += "/" + "/".join(parts[1:])
+                    cancreate = False
+        return rval, cancreate
+    def _create_if_not_exist(self,parents, names, childname=None):
+       print("##########   _create_if_not_exist   ##########")
+       entity = parents.pop()
+       name = names.pop()
+       storage=entity.storage()
+       epath = "~/.rumpeltree/" + storage() + ".dat"
+       epath = os.path.expanduser(epath)
+       if os.path.exists(epath):
+           print("* exists", epath)
+           if childname:
+               print("ADDING DIR TO EXISTING DIR")
+               fek=storage.crypto_key()
+               BS = 16
+               ctr = Counter.new(128)
+               cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+               print("READING OLD")
+               f = open(epath,'rb')
+               ed=f.read()
+               f.close()
+               print("DECRYPTING OLD")
+               padded = cipher.decrypt(ed)
+               plain = padded[:-ord(padded[len(padded)-1:])]
+               dirobj = json.loads(plain.decode('utf-8'))
+               print("PATCHING")
+               dirobj["entries"].append(childname)
+               data=json.dumps(dirobj)
+               print("PADDING")
+               padded=data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
+               print("ENCRYPTING")
+               ctr = Counter.new(128)
+               cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+               ed=cipher.encrypt(padded)
+               print("WRITING")
+               f = open(epath, 'wb')
+               f.write(ed)
+               f.close()
+               print("DONE")
+           return
+       else:
+           print("* not exist", epath)
+           if parents:
+               self._create_if_not_exist(parents, names, name)
+           print("* no more parents", epath)
+           dic = fuse.Fuse.GetContext(self)
+           uid = dic["uid"]
+           print("* UID:", uid)
+           dirobj = dict()
+           now = int(time.time())
+           print("* time:", now)
+           dirobj["stat"] = dict()
+           if childname:
+               dirobj["entries"] = [childname]
+               dirobj["stat"]["nlink"] = 3
+           else:
+               dirobj["entries"] = list()
+               dirobj["stat"]["nlink"] = 2
+           dirobj["streams"] = list()
+           dirobj["stat"]["mode"] = stat.S_IFDIR | 0o700
+           dirobj["stat"]["ino"] = 0
+           dirobj["stat"]["dev"] = 0
+           dirobj["stat"]["uid"] = uid
+           dirobj["stat"]["gid"] = uid
+           dirobj["stat"]["size"] = 4096
+           dirobj["stat"]["atime"] = now
+           dirobj["stat"]["mtime"] = now
+           dirobj["stat"]["ctime"] = now
+           print("* OBJ:",dirobj)
+           data=json.dumps(dirobj)
+           fek=storage.crypto_key()
+           BS = 16
+           padded=data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
+           ctr = Counter.new(128)
+           cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+           ed=cipher.encrypt(padded)
+           pathparts = epath.split("/")
+           gpdir = "/".join(pathparts[:-2])
+           pdir = "/".join(pathparts[:-1])
+           print("GPDIR:", gpdir)
+           if not os.path.exists(gpdir):
+               os.mkdir(gpdir)
+           print("PDIR:", pdir)
+           if not os.path.exists(pdir):
+               os.mkdir(pdir)
+           print("EPATH:", epath)
+           f = open(epath, 'wb')
+           f.write(ed)
+           f.close()
+    def _path_object(self, path, cancreate=False):
+        if not path:
+            return None,None,None
+        print("_path_object", path, cancreate)
+        parts = path.split("/")
+        if not parts:
+            return None,None,None
+        try:
+            entity=self.rt[parts[0]]
+            if cancreate:
+                parents = [entity]
+                names = [parts[0]]
+            for part in parts[1:]:
+                entity = entity[part]
+                if cancreate:
+                    parents.append(entity)
+                    names.append(part)
+            if cancreate:
+                self._create_if_not_exist(parents, names)
+            storage=entity.storage()
+        except:
+            return None,None,None
+        epath = "~/.rumpeltree/" + storage() + ".dat"
+        epath = os.path.expanduser(epath)
+        fek=storage.crypto_key()
+        BS = 16
+        ctr = Counter.new(128)
+        cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
+        f = open(epath,'rb')
+        ed=f.read()
+        f.close()
+        padded = cipher.decrypt(ed)
+        plain = padded[:-ord(padded[len(padded)-1:])]
+        if len(parts) > 1:
+            print(parts)
+            subent=entity[parts[1]].cap()
+            return json.loads(plain.decode('utf-8')), parts[1], subent
+        else:
+            return json.loads(plain.decode('utf-8')), None, None
+    def getattr(self, path):
+        print("getattr", path)
+        if path == "/":
+            return TopDirStat()
+        if path == "/cap":
+            return CapDirStat()
+        normpath, cancreate = self.normalize_path(path)
+        print(normpath, cancreate)
+        pobj,sub,cap = self._path_object(normpath, cancreate)
+        if pobj == None:
+            return -errno.ENOENT
+        st = DataStat(pobj["stat"])
+        return st
+    def utimens(self, path, ts_acc, ts_mod):
+        print("utimens", path, ts_acc, ts_mod)
+        return 0
+    def setattr(self, path, hmm):
+        print("setattr", path)
+        return -errno.EPERM
+    def opendir(self, path):
+        print("opendir", path)
+        return 0
+    def readdir(self, path, offset):
+        print("READDIR:", path, offset)
+        tags = ['.', '..']
+        topdirs = ["cap", "uid", "bin", "tmp"]
+        if path == "/":
+            print("ROOT")
+            tags += topdirs
+            for r in tags:
+                yield fuse.Direntry(r)
+        else:
+            normpath, cancreate = self.normalize_path(path)
+            pobj,sub,cap = self._path_object(normpath, cancreate)
+            if pobj == None:
+                print("DIRENTS: None")
+                return -errno.ENOENT
+            dirents =  [".", ".."] + pobj["entries"]
+            print("DIRENTS:", dirents)
+            for r in dirents:
+                yield fuse.Direntry(r)
+        #else:
+        #    print("NONTOP", path[1:])
+        #    pobj,sub,cap = self._path_object(path)
+        #    if pobj == None:
+        #        return -errno.ENOENT
+        #    for entry in pobj["dir"]:
+        #        tags.append(entry)
+        #return map(lambda k: fuse.Direntry(name = k, type = stat.S_IFDIR), tags)
+    def releasedir(self, path):
+        print("releasedir", path)
+        return 0
+    def readlink(self, path):
+        print("readlink", path)
+        pobj,sub,cap = self._path_object(path)
+        return "../" + cap
+    def listxattr(self, path, huh):
+        print("listxattr", path)
+        return 0
+    def getxattr(self, path, name, size):
+        print("getxattr", path)
+        return 0
+    def setxattr(self, path, name, val, more):
+        print("setxattr", path)
+        return 0
+    def open(self, path, flags):
+        print("open", path)
+        return 0
+    def release(self, path, fh):
+        print("release", path)
+        return 0
+    def read(self, path, size, offset):
+        print("read", path)
+        return 0
+    def write(self, path, data, offset):
+        print("write", path)
+        return 0
+    def truncate(self, path, len, fh=None):
+        print("truncate", path)
+        return 0
+    def flush(self, path):
+        print("flush", path)
+        return 0
+
+def runfs(mp, secret, cloudsecret, rootsecret):
+      fs = RumpelTreeFs(version='%prog ' + '0.1.0',
+              usage='RumpelTree FileSystem ' + fuse.Fuse.fusage, 
+              dash_s_do='setsingle', 
+              secret=secret, 
+              cloudsecret=cloudsecret, 
+              rootsecret=rootsecret)
+      fs.parse(errex=1)
+      fs.flags = 0
+      fs.multithreaded = 0
+      fs.main()
+
+home=expanduser("~")
+rumpeldir=home + "/.rumpeltree"
+if not exists(rumpeldir):
+  print("Creating dir : '"+rumpeldir+"'")
+  os.mkdir(rumpeldir)
+#repo=Repository(rumpeldir,b"sst,this is a secret")
+#me=os.path.basename(__file__)
+if len(sys.argv) < 2:
+  print("Purpose:")
+  print("   Mount repo with at least one existing root directory as a file-system.")
+  print("Usage:")
+  print("   rumpeltreefs <mountpoint>")
+  exit()
+if not os.path.isdir(sys.argv[1]):
+    print("ERROR: invalid mountpoint given!")
+    exit(1)
+if len(os.listdir(sys.argv[1]) ) != 0:
+    print("ERROR: Mountpoint must be an empty directory!")
+    exit(1)
+#FIXME: We need better secrets than this.
+runfs(sys.argv[1], b"sst,this is a secret", "", "rumpelstiltskin")
+
