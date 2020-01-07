@@ -131,54 +131,43 @@ class RumpelTreeFs(fuse.Fuse):
                     cancreate = False
         return rval, cancreate
     def _create_if_not_exist(self,parents, names, childname=None):
-       print("##########   _create_if_not_exist   ##########")
        entity = parents.pop()
        name = names.pop()
        storage=entity.storage()
        epath = "~/.rumpeltree/" + storage() + ".dat"
        epath = os.path.expanduser(epath)
        if os.path.exists(epath):
-           print("* exists", epath)
            if childname:
-               print("ADDING DIR TO EXISTING DIR")
                fek=storage.crypto_key()
                BS = 16
                ctr = Counter.new(128)
                cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
-               print("READING OLD")
                f = open(epath,'rb')
                ed=f.read()
                f.close()
-               print("DECRYPTING OLD")
                padded = cipher.decrypt(ed)
                plain = padded[:-ord(padded[len(padded)-1:])]
                dirobj = json.loads(plain.decode('utf-8'))
-               print("PATCHING")
                dirobj["entries"].append(childname)
+               now = int(time.time())
+               dirobj["stat"]["atime"] = now
+               dirobj["stat"]["mtime"] = now
                data=json.dumps(dirobj)
-               print("PADDING")
                padded=data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
-               print("ENCRYPTING")
                ctr = Counter.new(128)
                cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
                ed=cipher.encrypt(padded)
-               print("WRITING")
                f = open(epath, 'wb')
                f.write(ed)
                f.close()
-               print("DONE")
            return
        else:
-           print("* not exist", epath)
            if parents:
                self._create_if_not_exist(parents, names, name)
-           print("* no more parents", epath)
            dic = fuse.Fuse.GetContext(self)
            uid = dic["uid"]
-           print("* UID:", uid)
            dirobj = dict()
            now = int(time.time())
-           print("* time:", now)
            dirobj["stat"] = dict()
            if childname:
                dirobj["entries"] = [childname]
@@ -196,7 +185,6 @@ class RumpelTreeFs(fuse.Fuse):
            dirobj["stat"]["atime"] = now
            dirobj["stat"]["mtime"] = now
            dirobj["stat"]["ctime"] = now
-           print("* OBJ:",dirobj)
            data=json.dumps(dirobj)
            fek=storage.crypto_key()
            BS = 16
@@ -207,20 +195,16 @@ class RumpelTreeFs(fuse.Fuse):
            pathparts = epath.split("/")
            gpdir = "/".join(pathparts[:-2])
            pdir = "/".join(pathparts[:-1])
-           print("GPDIR:", gpdir)
            if not os.path.exists(gpdir):
                os.mkdir(gpdir)
-           print("PDIR:", pdir)
            if not os.path.exists(pdir):
                os.mkdir(pdir)
-           print("EPATH:", epath)
            f = open(epath, 'wb')
            f.write(ed)
            f.close()
     def _path_object(self, path, cancreate=False):
         if not path:
             return None,None,None
-        print("_path_object", path, cancreate)
         parts = path.split("/")
         if not parts:
             return None,None,None
@@ -251,34 +235,37 @@ class RumpelTreeFs(fuse.Fuse):
         padded = cipher.decrypt(ed)
         plain = padded[:-ord(padded[len(padded)-1:])]
         if len(parts) > 1:
-            print(parts)
             subent=entity[parts[1]].cap()
             return json.loads(plain.decode('utf-8')), parts[1], subent
         else:
             return json.loads(plain.decode('utf-8')), None, None
     def getattr(self, path):
-        print("getattr", path)
         if path == "/":
             return TopDirStat()
         if path == "/cap":
             return CapDirStat()
         normpath, cancreate = self.normalize_path(path)
-        print(normpath, cancreate)
+        print("NORMPATH:", path, normpath, cancreate)
         pobj,sub,cap = self._path_object(normpath, cancreate)
         if pobj == None:
+            print("* PROBLEM")
             return -errno.ENOENT
+        print("* OK")
         st = DataStat(pobj["stat"])
         return st
     def utimens(self, path, ts_acc, ts_mod):
-        print("utimens", path, ts_acc, ts_mod)
+        print("METHOD: utimens", path, ts_acc, ts_mod)
         return 0
     def setattr(self, path, hmm):
-        print("setattr", path)
+        print("METHOD: setattr", path)
         return -errno.EPERM
     def opendir(self, path):
-        print("opendir", path)
+        print("METHOD: opendir", path)
+        if path == "/cap":
+            return -errno.EPERM
         return 0
     def readdir(self, path, offset):
+        print("METHOD: readdir", path)
         print("READDIR:", path, offset)
         tags = ['.', '..']
         topdirs = ["cap", "uid", "bin", "tmp"]
@@ -297,47 +284,51 @@ class RumpelTreeFs(fuse.Fuse):
             print("DIRENTS:", dirents)
             for r in dirents:
                 yield fuse.Direntry(r)
-        #else:
-        #    print("NONTOP", path[1:])
-        #    pobj,sub,cap = self._path_object(path)
-        #    if pobj == None:
-        #        return -errno.ENOENT
-        #    for entry in pobj["dir"]:
-        #        tags.append(entry)
-        #return map(lambda k: fuse.Direntry(name = k, type = stat.S_IFDIR), tags)
-    def releasedir(self, path):
-        print("releasedir", path)
-        return 0
     def readlink(self, path):
-        print("readlink", path)
+        print("METHOD: readlink", path)
         pobj,sub,cap = self._path_object(path)
         return "../" + cap
     def listxattr(self, path, huh):
-        print("listxattr", path)
-        return 0
+        print("METHOD: listxattr", path)
+        normpath, cancreate = self.normalize_path(path)
+        if normpath:
+            return ["user.shareable", "user.attenuated"]
+        return -errno.ENOENT
     def getxattr(self, path, name, size):
-        print("getxattr", path)
-        return 0
+        print("METHOD: getxattr", path, name, size)
+        normpath, cancreate = self.normalize_path(path)
+        if normpath:
+            if name in ["user.shareable", "user.attenuated"]:
+                parts = normpath.split("/")
+                entity=self.rt[parts[0]]
+                for part in parts[1:]:
+                    entity = entity[part]
+                if name=="user.shareable":
+                    return os.path.join(os.path.abspath(sys.argv[1]),"cap",entity.cap())
+                else:
+                    return os.path.join(os.path.abspath(sys.argv[1]),"cap",entity.attenuated().cap())
+        else:
+            return -errno.ENOENT
     def setxattr(self, path, name, val, more):
-        print("setxattr", path)
-        return 0
+        print("METHOD: setxattr", path, name, val, more)
+        return -errno.EPERM
     def open(self, path, flags):
-        print("open", path)
+        print("METHOD: open", path, flags)
         return 0
     def release(self, path, fh):
-        print("release", path)
+        print("METHOD: release", path, fh)
         return 0
     def read(self, path, size, offset):
-        print("read", path)
+        print("METHOD: read", path, size, offset)
         return 0
     def write(self, path, data, offset):
-        print("write", path)
+        print("METHOD: write", path, offset)
         return 0
     def truncate(self, path, len, fh=None):
-        print("truncate", path)
+        print("METHOD: truncate", path, len, fh)
         return 0
     def flush(self, path):
-        print("flush", path)
+        print("METHOD: flush", path)
         return 0
 
 def runfs(mp, secret, cloudsecret, rootsecret):
