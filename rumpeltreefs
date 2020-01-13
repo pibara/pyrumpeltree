@@ -1,4 +1,67 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+##################################################################################################
+#                                                                                                #
+#                                    rumpeltreefs                                                #
+#                                                                                                #
+# Work in progress all-in-one user space file-system implementing a port of RumpelstiltskinFs    #
+# as a single file-system on top of pyrumpeltree. This file-system isn't yet operational.        #
+# If you want to play around with it for codereview or contribution purposes, do the following:  #
+#                                                                                                #
+# * On Ubuntu, install 'fuse' (the kernel module) and 'libfuse-dev' (the C dev files)            #
+#   using apt-get or aptitude.                                                                   #
+#                                                                                                #
+#     sudo apt-get install fuse                                                                  #
+#     sudo apt-get install libfuse-dev                                                           #
+#                                                                                                #
+# * Install 'fuse-python' using pip with python3                                                 #
+#                                                                                                #
+#     python3 -m pip install fuse-python                                                         #
+#                                                                                                #
+# * Clone this repo                                                                              #
+#                                                                                                #
+#     git clone https://github.com/pibara/pyrumpeltree.git                                       #
+#                                                                                                #
+# * Do a CD to the repo dir, create a mount dir, and start this script with the -d option        #
+#                                                                                                #
+#     mkdir mnt                                                                                  #
+#     cd pyrumpeltree                                                                            #
+#     python3 ./rumpeltreefs ./mnt/ -d                                                           #
+#                                                                                                #
+#                                                                                                #
+#                                        TODO                                                    #
+#                                                                                                #
+# * Move to using AesInode for inode crypto stuff                                                #
+# * Make code pylint3 friendly                                                                   #
+# * Implement mkdir /rmdir                                                                       #
+# * Implement rmdir                                                                              #
+# * Implement symlink and unlink for symlinks                                                    #
+# * Implement mknod and unlink for special files.                                                #
+# * Create a AESData class for random access crypted data                                        #
+# * Implement posibility for AESData to be sparse.                                               #
+# * Move to using own-key fragments for AESData (32k?)                                           #
+# * Implement open with AESData file handle class                                                #
+# * Implement read/write/release                                                                 #
+# * Implement truncate/ftruncate                                                                 #
+# * Implement lock                                                                               #
+# * Implement flush                                                                              #
+# * Thread safety, make FS multi threaded                                                        #
+# * Get library part on pypi                                                                     #
+# * Better secrets + secrets storage.                                                            #
+# * Give rumpeltreefs its own repo                                                               #
+# * Start + run neatly as its own damon with its own user id.                                    #
+# * Add $MP/tmp cleanup daemon                                                                   #
+# * Look into writing AppArmor profiles                                                          #
+# * Decide if $HOME FS can also be made part of this all-in-one FS, or should be a second FS     #
+# * Write $HOME overlay.                                                                         #
+# * Write $HOME tool-group profiles for common Linux tools                                       #
+# * Test the usage of rumpeltreefs including the $HOME abstraction as $HOME on a desktop system  # 
+#   for a few weeks.                                                                             #
+# * Find someone to do a security review of the file-system                                      #
+# * Write some web pages, possibly on STEEM/UTOPIAN to explain usage and design.                 #
+# * Write howto on rumpeltreefs $HOME usage with common crypto currency wallets.                 #
+#                                                                                                #
+##################################################################################################
+
 import json
 import sys
 import stat
@@ -358,8 +421,21 @@ class RumpelTreeFs(fuse.Fuse):
         if path == "/":
             print("ROOT")
             tags += topdirs
+            print("TAGS:", tags)
             for r in tags:
-                yield fuse.Direntry(r)
+                if r == ".":
+                    tstat = TopDirStat()
+                    print("* ", r, tstat.st_mode, tstat.st_nlink)
+                    yield fuse.Direntry(name=r, st_mode=tstat.st_mode, st_nlink=tstat.st_nlink)
+                elif r == "..":
+                    #FIXME
+                    print("* .")
+                    yield fuse.Direntry(name=r)
+                else:
+                    tstat = self.getattr(os.path.join(path, r))
+                    print("* ", r, tstat.st_mode, tstat.st_nlink)
+                    yield fuse.Direntry(name=r, st_mode=tstat.st_mode, st_nlink=tstat.st_nlink)
+
         else:
             normpath, cancreate = self.normalize_path(path)
             pobj, sub, cap = self._path_object(normpath, cancreate)
@@ -369,7 +445,13 @@ class RumpelTreeFs(fuse.Fuse):
             dirents = [".", ".."] + pobj["entries"]
             print("DIRENTS:", dirents)
             for r in dirents:
-                yield fuse.Direntry(r)
+                if r == ".":
+                    tstat = self.getattr(path)
+                elif r == "..":
+                    tstat = self.getattr(os.path.dirname(path))
+                else:
+                    tstat = self.getattr(os.path.join(path, r))
+                yield fuse.Direntry(name=r, st_mode=tstat.st_mode, st_nlink=tstat.st_nlink)
     def readlink(self, path):
         print("METHOD: readlink", path)
         pobj, sub, cap = self._path_object(path)
@@ -379,7 +461,7 @@ class RumpelTreeFs(fuse.Fuse):
         normpath, cancreate = self.normalize_path(path)
         if normpath:
             return ["user.shareable", "user.attenuated"]
-        return -errno.ENOENT
+        return []
     def getxattr(self, path, name, size):
         print("METHOD: getxattr", path, name, size)
         normpath, cancreate = self.normalize_path(path)
@@ -395,7 +477,7 @@ class RumpelTreeFs(fuse.Fuse):
                     return os.path.join(os.path.abspath(sys.argv[1]), "cap",
                                         entity.attenuated().cap())
         else:
-            return -errno.ENOENT
+            return ""
     def setxattr(self, path, name, val, more):
         print("METHOD: setxattr", path, name, val, more)
         return -errno.EPERM
