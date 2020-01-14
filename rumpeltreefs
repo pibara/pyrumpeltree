@@ -54,7 +54,7 @@
 # * Decide if $HOME FS can also be made part of this all-in-one FS, or should be a second FS     #
 # * Write $HOME overlay.                                                                         #
 # * Write $HOME tool-group profiles for common Linux tools                                       #
-# * Test the usage of rumpeltreefs including the $HOME abstraction as $HOME on a desktop system  # 
+# * Test the usage of rumpeltreefs including the $HOME abstraction as $HOME on a desktop system  #
 #   for a few weeks.                                                                             #
 # * Find someone to do a security review of the file-system                                      #
 # * Write some web pages, possibly on STEEM/UTOPIAN to explain usage and design.                 #
@@ -157,7 +157,7 @@ class DataStat(fuse.Stat):
 
 class AesInode:
     def __init__(self, storage, localname=None, create_if_not_exist=False,
-                 create_node_type=stat.S_IFDIR, parent_storage=None):
+                 create_node_type=stat.S_IFDIR, parent_storage=None, parent_names=None):
         #The pathe where the storage file should reside if it exists.
         epath = "~/.rumpeltree/" + storage() + ".dat"
         path = os.path.expanduser(epath)
@@ -165,20 +165,32 @@ class AesInode:
         self.fek = storage.crypto_key()
         if os.path.exists(path):
             #If the file exists, read it and decrypt it.
-            BS = 16
+            blocksize = 16
             ctr = Counter.new(128)
             cipher = AES.new(self.fek, AES.MODE_CTR, counter=ctr)
             self.f = open(path, 'rb+')
             #Lock the file, this becomes important when the FS runs multi threaded.
             fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            ed = self.f.read()
-            padded = cipher.decrypt(ed)
+            encrypted_data = self.f.read()
+            padded = cipher.decrypt(encrypted_data)
             #Remove padding
             plain = padded[:-ord(padded[len(padded)-1:])]
             #Decode JSON to object
             self.obj = json.loads(plain.decode('utf-8'))
         else:
             if create_if_not_exist:
+                #If parent_names is defined, we may need to create the direct parent first.
+                parent_entity = parent_storage.pop()
+                parent_name = parent_names.pop()
+                parent_node = parent_storage
+                if parent_names:
+                    parent_node = AesInode(parent_entity,
+                                           local_name=parent_name,
+                                           create_if_not_exist=True,
+                                           parent_storage=parent_storage,
+                                           parent_names=parent_names)
+                else:
+                    parent_node = AesInode(parent_entity, create_if_not_exist=True)
                 #If it doesn't exist, create sub dirs first if needed.
                 pathparts = path.split("/")
                 gpdir = "/".join(pathparts[:-2])
@@ -192,8 +204,8 @@ class AesInode:
                 #Lock the file. This becomes important when the FS runs multi threaded.
                 fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 #Add this node as entry to the parent node if one is specified.
-                if parent_storage and localname:
-                    pn = AesInode(parent_storage)
+                if parent_node and localname:
+                    pn = AesInode(parent_node)
                     pn.add_dirent(localname, isdir)
                 #No inode yet, lets create one that makes sense.
                 now = int(time.time())
@@ -218,27 +230,97 @@ class AesInode:
                 self.obj = obj
             else:
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
-    def add_dirent(localname, isdir):
+    def add_dirent(self, localname, isdir):
         if not localname in set(self.obj["entries"]):
             self.obj["entries"].append(localname)
             if isdir:
-                obj["stat"]["nlink"] += 1
+                self.obj["stat"]["nlink"] += 1
             now = int(time.time())
-            obj["stat"]["mtime"] = now
+            self.obj["stat"]["mtime"] = now
+    def stat(self):
+        return DataStat(self.obj["stat"])
     def __del__(self):
         now = int(time.time())
         self.obj["stat"]["atime"] = now
         data = json.dumps(self.obj)
-        BS = 16
-        padded = data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
+        blocksize = 16
+        padded = data + (blocksize - len(data) % blocksize) * chr(blocksize - len(data) % blocksize)
         ctr = Counter.new(128)
         cipher = AES.new(self.fek, AES.MODE_CTR, counter=ctr)
-        ed = cipher.encrypt(padded)
+        encrypted_data = cipher.encrypt(padded)
         self.f.seek(0, 0)
-        self.f.write(ed)
+        self.f.write(encrypted_data)
         self.f.truncate()
         fcntl.flock(self.f, fcntl.LOCK_UN)
         self.f.close()
+
+class FsRootInode:
+    def stat(self):
+        return TopDirStat()
+
+class CapDirInode:
+    def stat(self):
+        return CapDirStat()
+
+class NoEntInode:
+    def stat(self):
+        return -errno.ENOENT
+
+def inode_from_path(rt, rootcap, path):
+    if path == "/":
+        return FsRootInode()
+    if path == "/cap":
+        return CapDirStat()
+    parts = path.split("/")[1:]
+    cancreate = False
+    rval = NoEntInode()
+    if parts[0] in ["tmp", "uid", "bin"]:
+        dic = fuse.Fuse.GetContext(self)
+        uid = dic["uid"]
+        pid = dic["pid"]
+        cancreate = True
+        ipath = None
+        if parts[0] == "uid":
+            ipath = rootcap + "/" + str(uid) + "/_user"
+            if len(parts) > 1:
+                ipath += "/" + "/".join(parts[1:])
+                cancreate = False
+        elif parts[0] == "tmp":
+            ipath = rootcap + "/" + str(uid) + "/" + str(pid)
+            if len(parts) > 1:
+                ipath += "/" + "/".join(parts[1:])
+                cancreate = False
+        else:
+            with open("/proc/" + str(pid) + "/maps") as maps:
+                cmd = maps.readline().split(" ")[-1][:-1]
+            ipath = rootcap + "/" + str(uid) + "/_bin" + cmd
+            if len(parts) > 1:
+                ipath += "/" + "/".join(parts[1:])
+                cancreate = False
+        if ipath:
+            parts = ipath.split("/")
+            try:
+                entity = rt[parts[0]]
+                if cancreate:
+                    parents = [entity]
+                    names = [parts[0]]
+                for part in parts[1:]:
+                    entity = entity[part]
+                    if cancreate:
+                        parents.append(entity)
+                        names.append(part)
+                storage = entity.storage()
+                if cancreate:
+                    rval = AesInode(storage,
+                                    localname=names[-1],
+                                    create_if_not_exist=True,
+                                    parent_storage=parents,
+                                    parent_names=names)
+                else:
+                    rval = AesInode(storage)
+            except:
+                pass
+    return rval
 
 class RumpelTreeFs(fuse.Fuse):
     def __init__(self, dash_s_do, version, usage, secret, cloudsecret, rootsecret):
@@ -288,13 +370,13 @@ class RumpelTreeFs(fuse.Fuse):
         if os.path.exists(epath):
             if childname:
                 fek = storage.crypto_key()
-                BS = 16
+                blocksize = 16
                 ctr = Counter.new(128)
                 cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
                 f = open(epath, 'rb')
-                ed = f.read()
+                encrypted_data = f.read()
                 f.close()
-                padded = cipher.decrypt(ed)
+                padded = cipher.decrypt(encrypted_data)
                 plain = padded[:-ord(padded[len(padded)-1:])]
                 dirobj = json.loads(plain.decode('utf-8'))
                 dirobj["entries"].append(childname)
@@ -302,12 +384,12 @@ class RumpelTreeFs(fuse.Fuse):
                 dirobj["stat"]["atime"] = now
                 dirobj["stat"]["mtime"] = now
                 data = json.dumps(dirobj)
-                padded = data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
+                padded = data + (blocksize - len(data) % blocksize) * chr(blocksize - len(data) % blocksize)
                 ctr = Counter.new(128)
                 cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
-                ed = cipher.encrypt(padded)
+                encrypted_data = cipher.encrypt(padded)
                 f = open(epath, 'wb')
-                f.write(ed)
+                f.write(encrypted_data)
                 f.close()
             return
         else:
@@ -336,11 +418,11 @@ class RumpelTreeFs(fuse.Fuse):
             dirobj["stat"]["ctime"] = now
             data = json.dumps(dirobj)
             fek = storage.crypto_key()
-            BS = 16
-            padded = data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
+            blocksize = 16
+            padded = data + (blocksize - len(data) % blocksize) * chr(blocksize - len(data) % blocksize)
             ctr = Counter.new(128)
             cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
-            ed = cipher.encrypt(padded)
+            encrypted_data = cipher.encrypt(padded)
             pathparts = epath.split("/")
             gpdir = "/".join(pathparts[:-2])
             pdir = "/".join(pathparts[:-1])
@@ -349,7 +431,7 @@ class RumpelTreeFs(fuse.Fuse):
             if not os.path.exists(pdir):
                 os.mkdir(pdir)
             f = open(epath, 'wb')
-            f.write(ed)
+            f.write(encrypted_data)
             f.close()
     def _path_object(self, path, cancreate=False):
         if not path:
@@ -375,13 +457,13 @@ class RumpelTreeFs(fuse.Fuse):
         epath = "~/.rumpeltree/" + storage() + ".dat"
         epath = os.path.expanduser(epath)
         fek = storage.crypto_key()
-        BS = 16
+        blocksize = 16
         ctr = Counter.new(128)
         cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
         f = open(epath, 'rb')
-        ed = f.read()
+        encrypted_data = f.read()
         f.close()
-        padded = cipher.decrypt(ed)
+        padded = cipher.decrypt(encrypted_data)
         plain = padded[:-ord(padded[len(padded)-1:])]
         if len(parts) > 1:
             subent = entity[parts[1]].cap()
@@ -435,7 +517,6 @@ class RumpelTreeFs(fuse.Fuse):
                     tstat = self.getattr(os.path.join(path, r))
                     print("* ", r, tstat.st_mode, tstat.st_nlink)
                     yield fuse.Direntry(name=r, st_mode=tstat.st_mode, st_nlink=tstat.st_nlink)
-
         else:
             normpath, cancreate = self.normalize_path(path)
             pobj, sub, cap = self._path_object(normpath, cancreate)
