@@ -97,3 +97,30 @@ a decent grasp of the potential of using either this Python port or the original
  * rumpelsave <cap> <name>: Create a new data node and fill it with the content supplied through stdin.
 
  
+# rumpeltreefs
+
+The rumpeltreefs script is a work-in-progress port of all six (capfs/tmpfs/binfs/uidfs/groupfs/homefs) of the file-systems from the MinorFS-II file-system suite into a single user space file-system. The rumpeltreefs script is currently in early development stage.
+
+* $MNT/cap/ : The base low-level sparse-cap indexed view of the file-system.
+* $MNT/tmp/ : Maps to $SECRETROOTCAP/$UID/$PID, meant for process private storage that goes away after the process ends. A seperate monitoring script will need to do GC on the underlying tree.
+* $MNT/uid/: Maps to $SECRETROOTCAP/$UID/\_user/, meant as default for most of $HOME.
+* $MNT/bin/: Maps to  $SECRETROOTCAP/$UID/\_bin/$PATHTOEXE, menat as private storage for a single binary.
+* $MNT/bin2/: For known scripting languages and VM binaries, maps to $SECRETROOTCAP/$UID/\_bin2/$PATHTOEXE/$PATHTOSCRIPT
+* $MNT/bin3/: For known scripting languages runn by an interpreter running in a VM. Maps to $SECRETROOTCAP/$UID/\_bin3/$PATHTOEXE/$PATHTOTV/$PATHTOSCRIPT.
+* $MNT/group: For executables, scripts, VM executables and scripts runn in a VM executable interpreter that are defined as part of a group in a config file, maps to $SECRETROOTCAP/$UID/\_group/$GROUPNAME
+* $MNT/home: See below description.
+
+## $MNT/home
+The $MNT/home abstraction aims to provide a just-right balance between backward compatibility and least-authority.
+
+* Independent of mapping to rumpeltreefs sub dirs, homefs should work with COW from a homedir template.
+* Top directories and files with a name that DON'T start with a dot in their name map to $MNT/uid
+* Top files and directories with a name that DO start with a dot in their name with a dot map to different rumpletreefs dirs depending on the existance of the bin\* dirs and the group dir. The priority list is:
+  1) Map to $MNT/group if possible
+  2) Otherwise, map to $MNT/bin3 if possible
+  3) Otherwise, map to $MNT/bin2 if possible
+  4) Otherwise, map to $MNT/bin
+  
+# rumpelgc
+
+A script (yet to be written) that cleans up $SECRETROOTCAP/$UID/$PID for processes no longer active. The rumpeltreefs file-system should not be thought to be usable without a working implementation of this script.
