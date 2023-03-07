@@ -31,7 +31,7 @@ class Repository:
     padded=data + (BS - len(data) % BS) * chr(BS - len(data) % BS)
     ctr = Counter.new(128)
     cipher = AES.new(fek, AES.MODE_CTR, counter=ctr)
-    ed=cipher.encrypt(padded)
+    ed=cipher.encrypt(padded.encode())
     filepath=self.root + "/" + relpath
     self._createdir("/".join(filepath.split("/")[:-1]))
     f = open(filepath, 'wb')
@@ -91,7 +91,7 @@ class Repository:
     storage=entity.storage()
     if self._exists(storage):
       data=self._readdata(storage)
-      print(data)
+      print(data.decode())
     else:
       print("ERROR: Entity does not exist")
   def restoredata(self,cap):

@@ -70,6 +70,14 @@ pibara[at]gmail[dot]com.
 Python 3 isn't really my normal language of choice so any tips on cleaning up my code or making it more pytonic
 are very much welcomed. 
 
+# Install pycryptodome first
+
+Seems the example tool doesn't work with PyCrypto anymore. Install PyCryptoDome instead:
+
+```
+pip install pycryptodome
+```
+
 # The example tool
 
 The tool rumpelbox is a simple busybox style all in one script that is symlinked multiple times to provide 
